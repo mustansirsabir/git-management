@@ -15,36 +15,96 @@ BLUE='\033[0;34m'   # Section headers
 PURPLE='\033[0;35m' # Author/Special Info
 NC='\033[0m'       # No Color
 
-echo -e "${BLUE}--------------------------------------------------${NC}"
-echo -e "${BLUE} Git Multi-Branch Checkout & Update Utility${NC}"
-echo -e "${PURPLE} Author: Mustansir Sabir${NC}"
-echo -e "${BLUE}--------------------------------------------------${NC}"
+# --- Flag Defaults ---
+VERBOSE=0
+QUIET=0
+DRY_RUN=0
+STRICT=0
+
+print_usage() {
+    echo -e "${YELLOW}Usage: $0 [options] branch1 [branch2] [branch3] ...${NC}"
+    echo -e "${YELLOW}"
+    echo -e "Options:"
+    echo -e "  -h, --help        Show this help message"
+    echo -e "  -v, --verbose     Show full output of git commands"
+    echo -e "  -q, --quiet       Suppress non-essential logs"
+    echo -e "  --dry-run         Simulate actions without checking out or pulling"
+    echo -e "  --strict          Exit immediately on first failure${NC}"
+}
+
+# --- Argument Parsing ---
+POSITIONAL=()
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help) print_usage; exit 0 ;;
+        -v|--verbose) VERBOSE=1 ;;
+        -q|--quiet) QUIET=1 ;;
+        --dry-run) DRY_RUN=1 ;;
+        --strict) STRICT=1 ;;
+        *) POSITIONAL+=("$arg") ;;
+    esac
+done
+set -- "${POSITIONAL[@]}"
+
+if [ "$VERBOSE" -eq 1 ] && [ "$QUIET" -eq 1 ]; then
+    echo -e "${RED}Error: --verbose and --quiet are mutually exclusive.${NC}"
+    exit 1
+fi
+
+log()     { [ "$QUIET" -eq 0 ] && echo -e "$1"; return 0; }
+log_err() { echo -e "$1" >&2; }
+
+# Runs a mutating git command, honoring --dry-run and --verbose
+run_git() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "${YELLOW}[dry-run] git $*${NC}"
+        return 0
+    fi
+    if [ "$VERBOSE" -eq 1 ]; then
+        git "$@"
+    else
+        git "$@" > /dev/null 2>&1
+    fi
+}
+
+# Logs a failure, restores the original branch, and aborts when --strict is set
+handle_failure() {
+    log_err "${RED}$1${NC}"
+    if [ "$STRICT" -eq 1 ]; then
+        log_err "${RED}Strict mode enabled: aborting on first failure.${NC}"
+        git checkout "$ORIGINAL_BRANCH" > /dev/null 2>&1
+        exit 1
+    fi
+}
+
+log "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE} Git Multi-Branch Checkout & Update Utility${NC}"
+log "${PURPLE} Author: Mustansir Sabir${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
 
 # Check if inside a git repository
 if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    echo -e "${RED}Error: This is not a Git repository.${NC}"
-    echo -e "${BLUE}--------------------------------------------------${NC}"
+    log_err "${RED}Error: This is not a Git repository.${NC}"
     exit 1
 fi
 
 # Validate input
 if [ "$#" -eq 0 ]; then
-    echo -e "${RED}Error: No branches provided.${NC}"
-    echo -e "${YELLOW}Usage: ./script.sh branch1 branch2 branch3${NC}"
-    echo -e "${BLUE}--------------------------------------------------${NC}"
+    log_err "${RED}Error: No branches provided.${NC}"
+    print_usage
     exit 1
 fi
 
 # Store original branch
 ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-echo -e "${YELLOW}Script started on branch: ${ORIGINAL_BRANCH}${NC}"
+log "${YELLOW}Script started on branch: ${ORIGINAL_BRANCH}${NC}"
 
-echo -e "${BLUE}--------------------------------------------------${NC}"
-echo -e "${GREEN}Branches to process:${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
+log "${GREEN}Branches to process:${NC}"
 for branch in "$@"; do
-    echo -e "  - $branch"
+    log "  - $branch"
 done
-echo -e "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
 
 # --- Result Tracking ---
 SUCCESS_BRANCHES=()
@@ -52,81 +112,85 @@ FAILED_BRANCHES=()
 SKIPPED_BRANCHES=()
 
 # Fetch latest references
-echo -e "${BLUE}Fetching latest updates from remote...${NC}"
-git fetch --all --prune
+log "${BLUE}Fetching latest updates from remote...${NC}"
+if [ "$VERBOSE" -eq 1 ]; then
+    git fetch --all --prune
+else
+    git fetch --all --prune > /dev/null 2>&1
+fi
 if [ $? -ne 0 ]; then
-    echo -e "${RED}Error: Failed to fetch from remote.${NC}"
+    log_err "${RED}Error: Failed to fetch from remote.${NC}"
     exit 1
 fi
 
 # Process each branch
 for branch in "$@"; do
-    echo -e "${BLUE}--------------------------------------------------${NC}"
-    echo -e "${BLUE}Processing branch: ${branch}${NC}"
+    log "${BLUE}--------------------------------------------------${NC}"
+    log "${BLUE}Processing branch: ${branch}${NC}"
 
     if git show-ref --verify --quiet "refs/heads/$branch"; then
-        echo -e "${GREEN}Branch exists locally. Checking out...${NC}"
-        git checkout "$branch" > /dev/null 2>&1
+        log "${GREEN}Branch exists locally. Checking out...${NC}"
+        run_git checkout "$branch"
 
         if [ $? -ne 0 ]; then
-            echo -e "${RED}Error: Failed to checkout '${branch}'.${NC}"
+            handle_failure "Error: Failed to checkout '${branch}'."
             FAILED_BRANCHES+=("$branch")
             continue
         fi
 
-        echo -e "${BLUE}Pulling latest changes for '${branch}'...${NC}"
-        git pull origin "$branch" > /dev/null 2>&1
+        log "${BLUE}Pulling latest changes for '${branch}'...${NC}"
+        run_git pull origin "$branch"
 
         if [ $? -eq 0 ]; then
-            echo -e "${GREEN}Successfully updated '${branch}'.${NC}"
+            log "${GREEN}Successfully updated '${branch}'.${NC}"
             SUCCESS_BRANCHES+=("$branch")
         else
-            echo -e "${YELLOW}Warning: Pull failed for '${branch}'.${NC}"
+            handle_failure "Warning: Pull failed for '${branch}'."
             FAILED_BRANCHES+=("$branch")
         fi
     else
-        echo -e "${YELLOW}Branch not found locally. Attempting to fetch from remote...${NC}"
+        log "${YELLOW}Branch not found locally. Attempting to fetch from remote...${NC}"
 
-        git checkout -b "$branch" "origin/$branch" > /dev/null 2>&1
+        run_git checkout -b "$branch" "origin/$branch"
 
         if [ $? -ne 0 ]; then
-            echo -e "${RED}Error: Branch '${branch}' not found on remote.${NC}"
+            handle_failure "Error: Branch '${branch}' not found on remote."
             SKIPPED_BRANCHES+=("$branch")
             continue
         fi
 
-        echo -e "${GREEN}Successfully created '${branch}'.${NC}"
+        log "${GREEN}Successfully created '${branch}'.${NC}"
 
-        git pull origin "$branch" > /dev/null 2>&1
+        run_git pull origin "$branch"
         SUCCESS_BRANCHES+=("$branch")
     fi
 done
 
 # Return to original branch
-echo -e "${BLUE}--------------------------------------------------${NC}"
-echo -e "${BLUE}Returning to original branch: ${ORIGINAL_BRANCH}${NC}"
-git checkout "$ORIGINAL_BRANCH" > /dev/null 2>&1
+log "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE}Returning to original branch: ${ORIGINAL_BRANCH}${NC}"
+run_git checkout "$ORIGINAL_BRANCH"
 
 # --- Summary Report ---
-echo -e "${BLUE}--------------------------------------------------${NC}"
-echo -e "${BLUE} Summary Report${NC}"
-echo -e "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE} Summary Report${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
 
-echo -e "${GREEN}Successful branches (${#SUCCESS_BRANCHES[@]}):${NC}"
+log "${GREEN}Successful branches (${#SUCCESS_BRANCHES[@]}):${NC}"
 for branch in "${SUCCESS_BRANCHES[@]}"; do
-    echo -e "  - $branch"
+    log "  - $branch"
 done
 
-echo -e "${RED}Failed branches (${#FAILED_BRANCHES[@]}):${NC}"
+log "${RED}Failed branches (${#FAILED_BRANCHES[@]}):${NC}"
 for branch in "${FAILED_BRANCHES[@]}"; do
-    echo -e "  - $branch"
+    log "  - $branch"
 done
 
-echo -e "${YELLOW}Skipped branches (${#SKIPPED_BRANCHES[@]}):${NC}"
+log "${YELLOW}Skipped branches (${#SKIPPED_BRANCHES[@]}):${NC}"
 for branch in "${SKIPPED_BRANCHES[@]}"; do
-    echo -e "  - $branch"
+    log "  - $branch"
 done
 
-echo -e "${BLUE}--------------------------------------------------${NC}"
-echo -e "${GREEN}✅ Processing complete.${NC}"
-echo -e "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
+log "${GREEN}✅ Processing complete.${NC}"
+log "${BLUE}--------------------------------------------------${NC}"

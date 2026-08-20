@@ -17,15 +17,25 @@ REMOTE="origin"
 SCOPE="both"
 BRANCHES=()
 
+# --- Flag Defaults ---
+VERBOSE=0
+QUIET=0
+DRY_RUN=0
+STRICT=0
+
 print_usage() {
-    echo -e "${YELLOW}Usage: $0 [-l|--local-only] [-r|--remote-only] <branch1> [branch2] ...${NC}"
+    echo -e "${YELLOW}Usage: $0 [options] <branch1> [branch2] ...${NC}"
     echo -e "${YELLOW}Example: $0 feature/foo bugfix/bar${NC}"
     echo -e "${YELLOW}Example: $0 --local-only feature/foo bugfix/bar${NC}"
     echo -e "${YELLOW}"
     echo -e "Options:"
     echo -e "  -l, --local-only   Only check for branches locally"
     echo -e "  -r, --remote-only  Only check for branches on '${REMOTE}'"
-    echo -e "  -h, --help         Show this help message${NC}"
+    echo -e "  -h, --help         Show this help message"
+    echo -e "  -v, --verbose      Show full output of git commands"
+    echo -e "  -q, --quiet        Print only the table and summary"
+    echo -e "  --dry-run          Accepted for consistency; this script makes no changes"
+    echo -e "  --strict           Accepted for consistency; this script has no failure cases to abort on${NC}"
 }
 
 # --- Argument Parsing ---
@@ -49,38 +59,48 @@ for arg in "$@"; do
             print_usage
             exit 0
             ;;
+        -v|--verbose) VERBOSE=1 ;;
+        -q|--quiet) QUIET=1 ;;
+        --dry-run) DRY_RUN=1 ;;
+        --strict) STRICT=1 ;;
         *)
             BRANCHES+=("$arg")
             ;;
     esac
 done
 
-echo -e "${BLUE}--------------------------------------------------${NC}"
-echo -e "${BLUE} Git Branch Existence Checker${NC}"
-echo -e "${PURPLE} Author: Mustansir Sabir${NC}"
-echo -e "${BLUE}--------------------------------------------------${NC}"
+if [ "$VERBOSE" -eq 1 ] && [ "$QUIET" -eq 1 ]; then
+    echo -e "${RED}Error: --verbose and --quiet are mutually exclusive.${NC}"
+    exit 1
+fi
+
+log()     { [ "$QUIET" -eq 0 ] && echo -e "$1"; return 0; }
+log_err() { echo -e "$1" >&2; }
+
+log "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE} Git Branch Existence Checker${NC}"
+log "${PURPLE} Author: Mustansir Sabir${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
 
 # Check if inside a git repository
 if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    echo -e "${RED}Error: This is not a Git repository.${NC}"
-    echo -e "${BLUE}--------------------------------------------------${NC}"
+    log_err "${RED}Error: This is not a Git repository.${NC}"
     exit 1
 fi
 
 # Validate input
 if [ "${#BRANCHES[@]}" -eq 0 ]; then
-    echo -e "${RED}Error: No branches provided.${NC}"
+    log_err "${RED}Error: No branches provided.${NC}"
     print_usage
-    echo -e "${BLUE}--------------------------------------------------${NC}"
     exit 1
 fi
 
-echo -e "${YELLOW}Scope: ${SCOPE}${NC}"
-echo -e "${GREEN}Branches to check (${#BRANCHES[@]}):${NC}"
+log "${YELLOW}Scope: ${SCOPE}${NC}"
+log "${GREEN}Branches to check (${#BRANCHES[@]}):${NC}"
 for branch in "${BRANCHES[@]}"; do
-    echo -e "  - $branch"
+    log "  - $branch"
 done
-echo -e "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
 
 # Helper: returns 0 (true) if $1 is present in the array named $2
 contains() {
@@ -100,7 +120,7 @@ REMOTE_BRANCHES=()
 
 # Gather local branches
 if [ "$SCOPE" == "local" ] || [ "$SCOPE" == "both" ]; then
-    echo -e "${BLUE}Reading local branches...${NC}"
+    log "${BLUE}Reading local branches...${NC}"
     while IFS= read -r line; do
         [ -n "$line" ] && LOCAL_BRANCHES+=("$line")
     done < <(git for-each-ref --format='%(refname:short)' refs/heads)
@@ -108,20 +128,24 @@ fi
 
 # Gather remote branches
 if [ "$SCOPE" == "remote" ] || [ "$SCOPE" == "both" ]; then
-    echo -e "${BLUE}Fetching latest updates from '${REMOTE}'...${NC}"
-    git fetch --all --prune > /dev/null 2>&1
+    log "${BLUE}Fetching latest updates from '${REMOTE}'...${NC}"
+    if [ "$VERBOSE" -eq 1 ]; then
+        git fetch --all --prune
+    else
+        git fetch --all --prune > /dev/null 2>&1
+    fi
     if [ $? -ne 0 ]; then
-        echo -e "${YELLOW}Warning: Failed to fetch from remote. Remote branch data may be stale.${NC}"
+        log "${YELLOW}Warning: Failed to fetch from remote. Remote branch data may be stale.${NC}"
     fi
 
-    echo -e "${BLUE}Reading remote branches on '${REMOTE}'...${NC}"
+    log "${BLUE}Reading remote branches on '${REMOTE}'...${NC}"
     while IFS= read -r line; do
         line="${line#${REMOTE}/}"
         [ -n "$line" ] && [ "$line" != "HEAD" ] && REMOTE_BRANCHES+=("$line")
     done < <(git for-each-ref --format='%(refname:short)' "refs/remotes/${REMOTE}")
 fi
 
-echo -e "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
 
 # --- Result Tracking ---
 FOUND_BRANCHES=()

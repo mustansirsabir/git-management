@@ -14,35 +14,106 @@ NC='\033[0m'       # No Color
 
 REMOTE="origin"
 
-echo -e "${BLUE}--------------------------------------------------${NC}"
-echo -e "${BLUE} Git Remote Branch Deletion Utility${NC}"
-echo -e "${PURPLE} Author: Mustansir Sabir${NC}"
-echo -e "${BLUE}--------------------------------------------------${NC}"
-echo -e "${YELLOW}WARNING: This script deletes branches from the remote '${REMOTE}'.${NC}"
-echo -e "${YELLOW}This action affects everyone using the remote repository.${NC}"
-echo -e "${BLUE}--------------------------------------------------${NC}"
+# --- Flag Defaults ---
+VERBOSE=0
+QUIET=0
+DRY_RUN=0
+STRICT=0
+ASSUME_YES=0
+
+print_usage() {
+    echo -e "${YELLOW}Usage: $0 [options] <branch1> [branch2] ...${NC}"
+    echo -e "${YELLOW}Example: $0 feature/old-feature bugfix/stale-fix${NC}"
+    echo -e "${YELLOW}"
+    echo -e "Options:"
+    echo -e "  -h, --help        Show this help message"
+    echo -e "  -v, --verbose     Show full output of git commands"
+    echo -e "  -q, --quiet       Suppress non-essential logs"
+    echo -e "  --dry-run         Show what would be deleted without doing it"
+    echo -e "  --strict          Exit immediately on first failure"
+    echo -e "  -y, --yes         Skip the confirmation prompt${NC}"
+}
+
+# --- Argument Parsing ---
+POSITIONAL=()
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help) print_usage; exit 0 ;;
+        -v|--verbose) VERBOSE=1 ;;
+        -q|--quiet) QUIET=1 ;;
+        --dry-run) DRY_RUN=1 ;;
+        --strict) STRICT=1 ;;
+        -y|--yes) ASSUME_YES=1 ;;
+        *) POSITIONAL+=("$arg") ;;
+    esac
+done
+set -- "${POSITIONAL[@]}"
+
+if [ "$VERBOSE" -eq 1 ] && [ "$QUIET" -eq 1 ]; then
+    echo -e "${RED}Error: --verbose and --quiet are mutually exclusive.${NC}"
+    exit 1
+fi
+
+log()     { [ "$QUIET" -eq 0 ] && echo -e "$1"; return 0; }
+log_err() { echo -e "$1" >&2; }
+
+# Runs a mutating git command, honoring --dry-run and --verbose
+run_git() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "${YELLOW}[dry-run] git $*${NC}"
+        return 0
+    fi
+    if [ "$VERBOSE" -eq 1 ]; then
+        git "$@"
+    else
+        git "$@" > /dev/null 2>&1
+    fi
+}
+
+# Logs a failure and aborts immediately when --strict is set
+handle_failure() {
+    log_err "${RED}$1${NC}"
+    if [ "$STRICT" -eq 1 ]; then
+        log_err "${RED}Strict mode enabled: aborting on first failure.${NC}"
+        exit 1
+    fi
+}
+
+log "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE} Git Remote Branch Deletion Utility${NC}"
+log "${PURPLE} Author: Mustansir Sabir${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
+log "${YELLOW}WARNING: This script deletes branches from the remote '${REMOTE}'.${NC}"
+log "${YELLOW}This action affects everyone using the remote repository.${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
 
 # Check if inside a git repository
 if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    echo -e "${RED}Error: This is not a Git repository.${NC}"
-    echo -e "${BLUE}--------------------------------------------------${NC}"
+    log_err "${RED}Error: This is not a Git repository.${NC}"
     exit 1
 fi
 
 # Validate input
 if [ "$#" -eq 0 ]; then
-    echo -e "${RED}Error: No branches provided.${NC}"
-    echo -e "${YELLOW}Usage: $0 <branch1> [branch2] ...${NC}"
-    echo -e "${YELLOW}Example: $0 feature/old-feature bugfix/stale-fix${NC}"
-    echo -e "${BLUE}--------------------------------------------------${NC}"
+    log_err "${RED}Error: No branches provided.${NC}"
+    print_usage
     exit 1
 fi
 
-echo -e "${GREEN}Branches to delete from '${REMOTE}':${NC}"
+log "${GREEN}Branches to delete from '${REMOTE}':${NC}"
 for branch in "$@"; do
-    echo -e "  - $branch"
+    log "  - $branch"
 done
-echo -e "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
+
+if [ "$DRY_RUN" -eq 0 ] && [ "$ASSUME_YES" -eq 0 ]; then
+    echo -e "${YELLOW}Delete $# branch(es) listed above from '${REMOTE}'? [y/N]${NC}"
+    read -r CONFIRM
+    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+        log "${YELLOW}Aborted by user. No branches were deleted.${NC}"
+        exit 0
+    fi
+fi
 
 # --- Result Tracking ---
 SUCCESS_BRANCHES=()
@@ -50,10 +121,14 @@ FAILED_BRANCHES=()
 SKIPPED_BRANCHES=()
 
 # Fetch latest references so remote branch state is up to date
-echo -e "${BLUE}Fetching latest updates from remote...${NC}"
-git fetch --all --prune
+log "${BLUE}Fetching latest updates from remote...${NC}"
+if [ "$VERBOSE" -eq 1 ]; then
+    git fetch --all --prune
+else
+    git fetch --all --prune > /dev/null 2>&1
+fi
 if [ $? -ne 0 ]; then
-    echo -e "${RED}Error: Failed to fetch from remote.${NC}"
+    log_err "${RED}Error: Failed to fetch from remote.${NC}"
     exit 1
 fi
 
@@ -61,53 +136,53 @@ fi
 PROTECTED_BRANCHES=("main" "master" "develop" "release")
 
 for branch in "$@"; do
-    echo -e "${BLUE}--------------------------------------------------${NC}"
-    echo -e "${BLUE}Processing branch: ${branch}${NC}"
+    log "${BLUE}--------------------------------------------------${NC}"
+    log "${BLUE}Processing branch: ${branch}${NC}"
 
     if [[ " ${PROTECTED_BRANCHES[@]} " =~ " ${branch} " ]]; then
-        echo -e "${YELLOW}Skipping protected branch: ${branch}${NC}"
+        log "${YELLOW}Skipping protected branch: ${branch}${NC}"
         SKIPPED_BRANCHES+=("$branch")
         continue
     fi
 
     if ! git ls-remote --exit-code --heads "$REMOTE" "$branch" > /dev/null 2>&1; then
-        echo -e "${YELLOW}Branch '${branch}' does not exist on '${REMOTE}'. Skipping.${NC}"
+        log "${YELLOW}Branch '${branch}' does not exist on '${REMOTE}'. Skipping.${NC}"
         SKIPPED_BRANCHES+=("$branch")
         continue
     fi
 
-    echo -e "${RED}Deleting '${branch}' from '${REMOTE}'...${NC}"
-    git push "$REMOTE" --delete "$branch"
+    log "${RED}Deleting '${branch}' from '${REMOTE}'...${NC}"
+    run_git push "$REMOTE" --delete "$branch"
 
     if [ $? -eq 0 ]; then
-        echo -e "${GREEN}Successfully deleted '${branch}' from '${REMOTE}'.${NC}"
+        log "${GREEN}Successfully deleted '${branch}' from '${REMOTE}'.${NC}"
         SUCCESS_BRANCHES+=("$branch")
     else
-        echo -e "${RED}Error: Failed to delete '${branch}' from '${REMOTE}'.${NC}"
+        handle_failure "Error: Failed to delete '${branch}' from '${REMOTE}'."
         FAILED_BRANCHES+=("$branch")
     fi
 done
 
 # --- Summary Report ---
-echo -e "${BLUE}--------------------------------------------------${NC}"
-echo -e "${BLUE} Summary Report${NC}"
-echo -e "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE} Summary Report${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
 
-echo -e "${GREEN}Successfully deleted (${#SUCCESS_BRANCHES[@]}):${NC}"
+log "${GREEN}Successfully deleted (${#SUCCESS_BRANCHES[@]}):${NC}"
 for branch in "${SUCCESS_BRANCHES[@]}"; do
-    echo -e "  - $branch"
+    log "  - $branch"
 done
 
-echo -e "${RED}Failed to delete (${#FAILED_BRANCHES[@]}):${NC}"
+log "${RED}Failed to delete (${#FAILED_BRANCHES[@]}):${NC}"
 for branch in "${FAILED_BRANCHES[@]}"; do
-    echo -e "  - $branch"
+    log "  - $branch"
 done
 
-echo -e "${YELLOW}Skipped (${#SKIPPED_BRANCHES[@]}):${NC}"
+log "${YELLOW}Skipped (${#SKIPPED_BRANCHES[@]}):${NC}"
 for branch in "${SKIPPED_BRANCHES[@]}"; do
-    echo -e "  - $branch"
+    log "  - $branch"
 done
 
-echo -e "${BLUE}--------------------------------------------------${NC}"
-echo -e "${GREEN}✅ Processing complete.${NC}"
-echo -e "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
+log "${GREEN}✅ Processing complete.${NC}"
+log "${BLUE}--------------------------------------------------${NC}"

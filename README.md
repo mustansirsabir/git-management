@@ -126,6 +126,7 @@ chmod +x scripts/delete-local-branches.sh
 * Keeps specified branches
 * Deletes all others
 * Updates kept branches
+* Previews what will be updated/deleted and asks for confirmation before deleting (`-y`/`--yes` to skip)
 
 ---
 
@@ -141,6 +142,7 @@ chmod +x scripts/delete-remote-branches.sh
 * Deletes the specified branches from `origin`
 * Skips branches that don't exist on the remote
 * Skips protected branches (`main`, `master`, `develop`, `release`)
+* Asks for confirmation before deleting (`-y`/`--yes` to skip)
 * Provides a success/failed/skipped summary report
 
 ---
@@ -188,7 +190,7 @@ You can extend this toolkit with:
 
 ## ⚙️ Standardized CLI Patterns
 
-To ensure consistency and ease of use, all scripts in this repository should follow a unified CLI design.
+To ensure consistency and ease of use, all scripts in this repository follow a unified CLI design.
 
 ### 🔹 General Pattern
 
@@ -198,7 +200,7 @@ To ensure consistency and ease of use, all scripts in this repository should fol
 
 ---
 
-### 🔹 Common Flags (Recommended for All Scripts)
+### 🔹 Common Flags (Implemented in All Scripts)
 
 | Flag              | Description                               |
 | ----------------- | ----------------------------------------- |

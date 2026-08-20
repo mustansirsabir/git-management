@@ -12,65 +12,172 @@ BLUE='\033[0;34m'   # Section headers
 PURPLE='\033[0;35m' # Author/Special Info
 NC='\033[0m'       # No Color
 
-# --- Argument Parsing ---
-if [ "$#" -lt 3 ]; then
-    echo -e "${RED}Usage: $0 <source_branch> <target_branch> <commit_hash1> [commit_hash2] ...${NC}"
+# --- Flag Defaults ---
+VERBOSE=0
+QUIET=0
+DRY_RUN=0
+STRICT=0
+
+print_usage() {
+    echo -e "${RED}Usage: $0 [options] <source_branch> <target_branch> <commit_hash1> [commit_hash2] ...${NC}"
     echo -e "${YELLOW}Example: $0 develop main abc1234 def5678${NC}"
+    echo -e "${YELLOW}"
+    echo -e "Options:"
+    echo -e "  -h, --help        Show this help message"
+    echo -e "  -v, --verbose     Show full output of git commands"
+    echo -e "  -q, --quiet       Suppress non-essential logs"
+    echo -e "  --dry-run         Simulate the cherry-picks without applying them"
+    echo -e "  --strict          Accepted for consistency; a conflict always pauses for manual resolution${NC}"
+}
+
+# --- Argument Parsing ---
+POSITIONAL=()
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help) print_usage; exit 0 ;;
+        -v|--verbose) VERBOSE=1 ;;
+        -q|--quiet) QUIET=1 ;;
+        --dry-run) DRY_RUN=1 ;;
+        --strict) STRICT=1 ;;
+        *) POSITIONAL+=("$arg") ;;
+    esac
+done
+set -- "${POSITIONAL[@]}"
+
+if [ "$VERBOSE" -eq 1 ] && [ "$QUIET" -eq 1 ]; then
+    echo -e "${RED}Error: --verbose and --quiet are mutually exclusive.${NC}"
+    exit 1
+fi
+
+log()     { [ "$QUIET" -eq 0 ] && echo -e "$1"; return 0; }
+log_err() { echo -e "$1" >&2; }
+
+# Runs a mutating git command, honoring --dry-run and --verbose
+run_git() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "${YELLOW}[dry-run] git $*${NC}"
+        return 0
+    fi
+    if [ "$VERBOSE" -eq 1 ]; then
+        git "$@"
+    else
+        git "$@" > /dev/null 2>&1
+    fi
+}
+
+if [ "$#" -lt 3 ]; then
+    print_usage
     exit 1
 fi
 
 SOURCE_BRANCH="$1"
 TARGET_BRANCH="$2"
-# Shift arguments so that $@ now contains only commit hashes
 shift 2
-COMMITS_TO_CHERRY_PICK="$@"
+COMMITS_TO_CHERRY_PICK=("$@")
 
-echo -e "${BLUE}--------------------------------------------------${NC}"
-echo -e "${BLUE} Git Cherry-Pick Automation${NC}"
-echo -e "${PURPLE} Author: Mustansir Sabir${NC}"
-echo -e "${BLUE}--------------------------------------------------${NC}"
-echo -e "${YELLOW}Source Branch: ${SOURCE_BRANCH}${NC}"
-echo -e "${YELLOW}Target Branch: ${TARGET_BRANCH}${NC}"
-echo -e "${YELLOW}Commits to Cherry-Pick: ${COMMITS_TO_CHERRY_PICK}${NC}"
-echo -e "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE} Git Cherry-Pick Automation${NC}"
+log "${PURPLE} Author: Mustansir Sabir${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
+log "${YELLOW}Source Branch: ${SOURCE_BRANCH}${NC}"
+log "${YELLOW}Target Branch: ${TARGET_BRANCH}${NC}"
+log "${YELLOW}Commits to Cherry-Pick: ${COMMITS_TO_CHERRY_PICK[*]}${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
+
+# Check if inside a git repository
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    log_err "${RED}Error: This is not a Git repository.${NC}"
+    exit 1
+fi
+
+# Store the branch we started on so we can bounce back to it if setup fails
+# before any cherry-pick has been applied. Once cherry-picking starts, the
+# script intentionally leaves you on TARGET_BRANCH for review, even on success.
+ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
 # 1. Pull the latest from the given source branch
-echo -e "${BLUE}Step 1: Pulling latest from '${SOURCE_BRANCH}'...${NC}"
-git checkout "$SOURCE_BRANCH" > /dev/null 2>&1 || { echo -e "${RED}Error: Could not checkout source branch '${SOURCE_BRANCH}'. Exiting.${NC}"; exit 1; }
-git pull origin "$SOURCE_BRANCH" || { echo -e "${RED}Error: Could not pull '${SOURCE_BRANCH}'. Exiting.${NC}"; exit 1; }
-echo -e "${GREEN}Successfully pulled '${SOURCE_BRANCH}'.${NC}"
+log "${BLUE}Step 1: Pulling latest from '${SOURCE_BRANCH}'...${NC}"
+run_git checkout "$SOURCE_BRANCH"
+if [ $? -ne 0 ]; then
+    log_err "${RED}Error: Could not checkout source branch '${SOURCE_BRANCH}'. Exiting.${NC}"
+    git checkout "$ORIGINAL_BRANCH" > /dev/null 2>&1
+    exit 1
+fi
+run_git pull origin "$SOURCE_BRANCH"
+if [ $? -ne 0 ]; then
+    log_err "${RED}Error: Could not pull '${SOURCE_BRANCH}'. Exiting.${NC}"
+    git checkout "$ORIGINAL_BRANCH" > /dev/null 2>&1
+    exit 1
+fi
+log "${GREEN}Successfully pulled '${SOURCE_BRANCH}'.${NC}"
 
 # 2. Check out the target branch
-echo -e "${BLUE}Step 2: Checking out target branch '${TARGET_BRANCH}'...${NC}"
-git checkout "$TARGET_BRANCH" > /dev/null 2>&1 || { echo -e "${RED}Error: Could not checkout target branch '${TARGET_BRANCH}'. Exiting.${NC}"; exit 1; }
-echo -e "${GREEN}Successfully checked out '${TARGET_BRANCH}'.${NC}"
+log "${BLUE}Step 2: Checking out target branch '${TARGET_BRANCH}'...${NC}"
+run_git checkout "$TARGET_BRANCH"
+if [ $? -ne 0 ]; then
+    log_err "${RED}Error: Could not checkout target branch '${TARGET_BRANCH}'. Exiting.${NC}"
+    git checkout "$ORIGINAL_BRANCH" > /dev/null 2>&1
+    exit 1
+fi
+log "${GREEN}Successfully checked out '${TARGET_BRANCH}'.${NC}"
 
 # 3. Perform cherry-pick from multiple commits
-echo -e "${BLUE}Step 3: Performing cherry-pick of commits into '${TARGET_BRANCH}'...${NC}"
-# Loop through each commit hash and attempt to cherry-pick
-for commit_hash in $COMMITS_TO_CHERRY_PICK; do
-    echo -e "${YELLOW}Attempting to cherry-pick commit: ${commit_hash}${NC}"
-    # The --no-commit flag allows multiple cherry-picks to be applied
-    # without creating a new commit after each one, allowing for a single
-    # commit at the end if desired (or manual resolution).
-    # For multiple individual commits, remove --no-commit if each should be a separate commit.
-    # Here, we'll assume individual commits for simplicity, if you want a single commit
-    # you would need to run `git commit` after all cherry-picks are done.
-    git cherry-pick "$commit_hash"
+log "${BLUE}Step 3: Performing cherry-pick of commits into '${TARGET_BRANCH}'...${NC}"
+
+SUCCESS_COMMITS=()
+FAILED_COMMITS=()
+
+for commit_hash in "${COMMITS_TO_CHERRY_PICK[@]}"; do
+    log "${YELLOW}Attempting to cherry-pick commit: ${commit_hash}${NC}"
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "${YELLOW}[dry-run] git cherry-pick ${commit_hash}${NC}"
+        SUCCESS_COMMITS+=("$commit_hash")
+        continue
+    fi
+
+    if [ "$VERBOSE" -eq 1 ]; then
+        git cherry-pick "$commit_hash"
+    else
+        git cherry-pick "$commit_hash" > /dev/null 2>&1
+    fi
+
     if [ $? -ne 0 ]; then
-        echo -e "${RED}Warning: Cherry-pick of commit '${commit_hash}' failed. Please resolve conflicts manually and then run 'git cherry-pick --continue' or 'git cherry-pick --abort'.${NC}"
+        log_err "${RED}Warning: Cherry-pick of commit '${commit_hash}' failed. Please resolve conflicts manually and then run 'git cherry-pick --continue' or 'git cherry-pick --abort'.${NC}"
+        FAILED_COMMITS+=("$commit_hash")
         echo -e "${YELLOW}Script paused. Press Enter to continue after manual resolution or abort.${NC}"
         read -r
-        # After manual resolution, the user needs to decide to continue or abort.
-        # This script won't automatically continue to avoid unexpected behavior.
-        # It's better for the user to manually continue or abort and then re-run the script for remaining commits.
-        exit 1 # Exit if a conflict occurs, requiring manual intervention
+        # Exit here rather than guessing whether the conflict was resolved or
+        # aborted -- re-run the script for any remaining commits afterward.
+        break
     else
-        echo -e "${GREEN}Successfully cherry-picked commit: ${commit_hash}${NC}"
+        log "${GREEN}Successfully cherry-picked commit: ${commit_hash}${NC}"
+        SUCCESS_COMMITS+=("$commit_hash")
     fi
 done
 
-echo -e "${BLUE}--------------------------------------------------${NC}"
-echo -e "${GREEN}Cherry-pick process completed.${NC}"
-echo -e "${YELLOW}Please review the changes and commit them if everything looks good.${NC}"
-echo -e "${BLUE}--------------------------------------------------${NC}"
+# --- Summary Report ---
+log "${BLUE}--------------------------------------------------${NC}"
+log "${BLUE} Summary Report${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
+
+log "${GREEN}Cherry-picked (${#SUCCESS_COMMITS[@]}):${NC}"
+for commit in "${SUCCESS_COMMITS[@]}"; do
+    log "  - $commit"
+done
+
+log "${RED}Failed/paused (${#FAILED_COMMITS[@]}):${NC}"
+for commit in "${FAILED_COMMITS[@]}"; do
+    log "  - $commit"
+done
+
+log "${BLUE}--------------------------------------------------${NC}"
+
+if [ "${#FAILED_COMMITS[@]}" -gt 0 ]; then
+    log_err "${RED}Cherry-pick process stopped due to a conflict. Resolve it, then re-run for any remaining commits.${NC}"
+    exit 1
+fi
+
+log "${GREEN}Cherry-pick process completed. You are on '${TARGET_BRANCH}'.${NC}"
+log "${YELLOW}Please review the changes and commit them if everything looks good.${NC}"
+log "${BLUE}--------------------------------------------------${NC}"
