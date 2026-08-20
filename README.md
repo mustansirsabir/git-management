@@ -33,6 +33,9 @@ chmod +x scripts/*.sh
 * `list-local-branches.sh`
   Lists all local branches in a clean format and highlights the currently active branch.
 
+* `find-missing-branches.sh`
+  Checks a list of branch names against local and/or remote branches and prints a tabular report of which ones are missing.
+
 ### Advanced Operations
 
 * `cherry-pick-automation.sh`
@@ -89,6 +92,25 @@ chmod +x scripts/list-local-branches.sh
 * Displays all local branches
 * Highlights current branch
 * Clean formatted output
+
+---
+
+### 🔍 Finding Missing Branches
+
+```bash
+chmod +x scripts/find-missing-branches.sh
+./scripts/find-missing-branches.sh branch1 branch2 branch3
+./scripts/find-missing-branches.sh --local-only branch1 branch2
+./scripts/find-missing-branches.sh --remote-only branch1 branch2
+```
+
+✔ Features:
+
+* Checks each given branch name against local branches, remote branches, or both (default)
+* `-l`, `--local-only` — only check local branches
+* `-r`, `--remote-only` — only check branches on `origin`
+* Prints a tabular report (branch / local / remote / status)
+* Provides a found/missing summary report
 
 ---
 
